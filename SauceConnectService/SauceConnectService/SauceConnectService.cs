@@ -27,12 +27,15 @@ namespace SauceConnectService
         private WebClient _SauceRestClient;
         /// <summary>true if the service is already stopping</summary>
         private bool _IsStopping;
+        /// <summary>event called when service is shutting down</summary>
+        private ManualResetEvent _ShutDownEvent;
 
         /// <summary>contructor</summary>
         public SauceConnectService()
         {
             InitializeComponent();
             this._IsStopping = false;
+            this._ShutDownEvent = new ManualResetEvent(false);
         }
 
         /// <summary>called when the service starts</summary>
@@ -72,23 +75,29 @@ namespace SauceConnectService
                 {
                     if (!existingTunnels.Contains(tunnelID))
                     {
+                        // store tunnel id
                         this.SauceConnectTunnelID = tunnelID;
+                        
+                        // start polling thread
+                        this.SauceConnectPollingThread = new Thread(this._PollForTunnel);
+                        this.SauceConnectPollingThread.Priority = ThreadPriority.Normal;
+                        this.SauceConnectPollingThread.Name = "Sauce Connect Polling Thread";
+                        this.SauceConnectPollingThread.IsBackground = true;
+                        this.SauceConnectPollingThread.Start();
                         return;
                     }
                 }
             }
 
-            // start polling thread
-            this.SauceConnectPollingThread = new Thread(this._PollForTunnel);
-            this.SauceConnectPollingThread.Priority = ThreadPriority.Normal;
-            this.SauceConnectPollingThread.Name = "Sauce Connect Polling Thread";
-            this.SauceConnectPollingThread.Start();
+            // stop the service because it did not start
+            this.Stop();
         }
 
         /// <summary>called when the service stops</summary>
         protected override void OnStop()
         {
             this._IsStopping = true;
+            this._ShutDownEvent.Set();
 
             // kill the java process
             if (null != SauceConnectProcess && !SauceConnectProcess.HasExited)
@@ -148,22 +157,32 @@ namespace SauceConnectService
             try
             {
                 var envPollingInterval = System.Environment.GetEnvironmentVariable("SAUCE_CONNECT_POLLING_INTERVAL");
-                int.TryParse(envPollingInterval, out pollingInterval);
+                if (envPollingInterval != null)
+                {
+                    int.TryParse(envPollingInterval, out pollingInterval);
+                }
             }
             catch { }
 
             // poll for exit
-            while (!this.SauceConnectProcess.HasExited)
+            while (!this._ShutDownEvent.WaitOne(0))
             {
-                // sleep for polling interval
-                Thread.Sleep(pollingInterval);
-
                 // check if tunnel is still open
                 if (!this._GetTunnelIDs().Contains(this.SauceConnectTunnelID))
                 {
                     // stop the service if the tunnel no longer exists
                     this.Stop();
                     return;
+                }
+
+                // sleep for polling interval
+                for (int i = 0; i < pollingInterval / 1000; i++)
+                {
+                    if (this._ShutDownEvent.WaitOne(0))
+                    {
+                        return;
+                    }
+                    Thread.Sleep(1000);
                 }
             }
         }

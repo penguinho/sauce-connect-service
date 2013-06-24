@@ -13,22 +13,22 @@ namespace SauceConnectService
     public partial class SauceConnectService : ServiceBase
     {
         /// <summary>Sauce Connect java process</summary>
-        public Process SauceConnectProcess;
+        private Process _SauceConnectProcess;
         /// <summary>Thread that polls to See If the tunnel is still running</summary>
-        public Thread SauceConnectPollingThread;
-        /// <summary>SauceLabs account ID to use for</summary>
-        public string SauceConnectID;
-        /// <summary>SauceLabs key corresponding to the account ID</summary>
-        public string SauceConnectKey;
-        /// <summary>id of the tunnel created by this service</summary>
-        public string SauceConnectTunnelID;
-
-        /// <summary>REST cleint to communicate with SauceLabs</summary>
+        private Thread _PollingThread;
+        /// <summary>REST client to communicate with SauceLabs</summary>
         private WebClient _SauceRestClient;
         /// <summary>true if the service is already stopping</summary>
         private bool _IsStopping;
         /// <summary>event called when service is shutting down</summary>
         private ManualResetEvent _ShutDownEvent;
+        /// <summary>SauceLabs account ID to use for</summary>
+        private string _ID;
+        /// <summary>SauceLabs key corresponding to the account ID</summary>
+        private string _Key;
+
+        /// <summary>id of the tunnel created by this service</summary>
+        public string TunnelID;
 
         /// <summary>contructor</summary>
         public SauceConnectService()
@@ -46,25 +46,25 @@ namespace SauceConnectService
             string javaHome = System.Environment.GetEnvironmentVariable("JAVA_HOME");
             string javaPath = Path.Combine(javaHome, "bin", "java.exe");
             string sauceArgs = System.Environment.GetEnvironmentVariable("SAUCE_CONNECT_ARGS");
-            this.SauceConnectID = System.Environment.GetEnvironmentVariable("SAUCE_CONNECT_ID");
-            this.SauceConnectKey = System.Environment.GetEnvironmentVariable("SAUCE_CONNECT_KEY");
+            this._ID = System.Environment.GetEnvironmentVariable("SAUCE_CONNECT_ID");
+            this._Key = System.Environment.GetEnvironmentVariable("SAUCE_CONNECT_KEY");
             string sauceConnectPath = Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location), "Resources", "Sauce-Connect.jar");
             
             // create a rest client
             this._SauceRestClient = new WebClient();
-            this._SauceRestClient.Credentials = new NetworkCredential(SauceConnectID, SauceConnectKey);
+            this._SauceRestClient.Credentials = new NetworkCredential(_ID, _Key);
             
             // setup the java process
-            this.SauceConnectProcess = new Process();
-            this.SauceConnectProcess.StartInfo.FileName = javaPath;
-            this.SauceConnectProcess.StartInfo.Arguments = "-jar \"" + sauceConnectPath + "\" " + (sauceArgs == null ? "" : sauceArgs + " ") + this.SauceConnectID + " " + this.SauceConnectKey;
-            this.SauceConnectProcess.Exited += _ProcessExited;
+            this._SauceConnectProcess = new Process();
+            this._SauceConnectProcess.StartInfo.FileName = javaPath;
+            this._SauceConnectProcess.StartInfo.Arguments = "-jar \"" + sauceConnectPath + "\" " + (sauceArgs == null ? "" : sauceArgs + " ") + this._ID + " " + this._Key;
+            this._SauceConnectProcess.Exited += _ProcessExited;
             
             // grab existing tunnels
             var existingTunnels = this._GetTunnelIDs();
 
             // launch the java process
-            this.SauceConnectProcess.Start();
+            this._SauceConnectProcess.Start();
 
             // wait until a new tunnel has launched
             DateTime startTime = DateTime.Now;
@@ -76,14 +76,14 @@ namespace SauceConnectService
                     if (!existingTunnels.Contains(tunnelID))
                     {
                         // store tunnel id
-                        this.SauceConnectTunnelID = tunnelID;
+                        this.TunnelID = tunnelID;
                         
                         // start polling thread
-                        this.SauceConnectPollingThread = new Thread(this._PollForTunnel);
-                        this.SauceConnectPollingThread.Priority = ThreadPriority.Normal;
-                        this.SauceConnectPollingThread.Name = "Sauce Connect Polling Thread";
-                        this.SauceConnectPollingThread.IsBackground = true;
-                        this.SauceConnectPollingThread.Start();
+                        this._PollingThread = new Thread(this._PollForTunnel);
+                        this._PollingThread.Priority = ThreadPriority.Normal;
+                        this._PollingThread.Name = "Sauce Connect Polling Thread";
+                        this._PollingThread.IsBackground = true;
+                        this._PollingThread.Start();
                         return;
                     }
                 }
@@ -100,19 +100,19 @@ namespace SauceConnectService
             this._ShutDownEvent.Set();
 
             // kill the java process
-            if (null != SauceConnectProcess && !SauceConnectProcess.HasExited)
+            if (null != _SauceConnectProcess && !_SauceConnectProcess.HasExited)
             {
-                this.SauceConnectProcess.Kill();
+                this._SauceConnectProcess.Kill();
             }
 
             // kill the tunnel using the rest api
-            if (_GetTunnelIDs().Contains(SauceConnectTunnelID))
+            if (_GetTunnelIDs().Contains(TunnelID))
             {
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create("https://saucelabs.com/rest/v1/" + this.SauceConnectID + "/tunnels/" + this.SauceConnectTunnelID);
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create("https://saucelabs.com/rest/v1/" + this._ID + "/tunnels/" + this.TunnelID);
                 request.Method = "DELETE";
                 request.Accept = "application/json";
                 request.ContentType = "application/json";
-                request.Credentials = new NetworkCredential(SauceConnectID, SauceConnectKey);
+                request.Credentials = new NetworkCredential(_ID, _Key);
                 HttpWebResponse response = (HttpWebResponse)request.GetResponse();
                 if (null != response)
                 {
@@ -137,7 +137,7 @@ namespace SauceConnectService
         /// <returns>list of tunnelIDs</returns>
         private List<string> _GetTunnelIDs()
         {
-            var result = this._SauceRestClient.DownloadString("https://saucelabs.com/rest/v1/" + this.SauceConnectID + "/tunnels");
+            var result = this._SauceRestClient.DownloadString("https://saucelabs.com/rest/v1/" + this._ID + "/tunnels");
             var resultArray = JArray.Parse(result);
             List<string> tunnelIDs = new List<string>();
             for (int i = 0; i < resultArray.Count; i++)
@@ -168,7 +168,7 @@ namespace SauceConnectService
             while (!this._ShutDownEvent.WaitOne(0))
             {
                 // check if tunnel is still open
-                if (!this._GetTunnelIDs().Contains(this.SauceConnectTunnelID))
+                if (!this._GetTunnelIDs().Contains(this.TunnelID))
                 {
                     // stop the service if the tunnel no longer exists
                     this.Stop();
